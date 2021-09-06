@@ -13,10 +13,10 @@ import org.springframework.web.bind.annotation.*;
 
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @RestController
 @CrossOrigin(exposedHeaders = "errors, content-type")
@@ -32,92 +32,144 @@ public class ImportCSV {
         consumes = "text/plain",
         produces = "application/json")
     public ResponseEntity<List<Pet>> importPets(@RequestBody String csv) {
-        List<Pet> pets = new LinkedList<Pet>();
+        // the method has to renamed - it doesn't just import, it also deletes
+        List<Pet> petsToAdd = new LinkedList<>();
+        List<Pet> petsToDelete = new LinkedList<>();
         for (String line : csv.split("\\r?\\n")) {
             String[] fields = line.split(";");
-            // validate the fields - check that we have as many as we need
-            // check each field - it should contain proper information
+
+            if (fields.length < 5) {
+                return errorResponse("not enough values");
+            }
+
             Pet pet = new Pet();
-
-            // set the name
             pet.setName(fields[0]);
+            SettingResponse settingResponse;
 
-
-            // set the birthdate
-            try {
-                pet.setBirthDate((new SimpleDateFormat("yyyy-MM-dd")).parse(fields[1]));
-            } catch (ParseException e) {
-                HttpHeaders headers = new HttpHeaders();
-                headers.add("errors", "date " + field + " not valid");
-                return new ResponseEntity<List<Pet>>(headers, HttpStatus.BAD_REQUEST);
+            settingResponse = setDateOfBirth(pet, fields[1]);
+            if (!settingResponse.isSuccessful) {
+                return errorResponse(settingResponse.errorMessage);
             }
 
-            // set the type
-            if (pet != null) {
-                ArrayList<PetType> ts = (ArrayList<PetType>) clinicService.findPetTypes();
-                for (int j = 0; j < ts.size(); j++) {
-                    if (ts.get(j).getName().toLowerCase().equals(fields[2])) {
-                        pet.setType(ts.get(j));
-                        break;
-                    }
-                }
+            settingResponse = setPetType(pet, fields[2]);
+            if (!settingResponse.isSuccessful) {
+                return errorResponse(settingResponse.errorMessage);
             }
 
-            // set the owner
-            if (pet != null) {
-                String owner = fields[3];
-                List<Owner> matchingOwners = clinicService.findAllOwners()
-                    .stream()
-                    .filter(o -> o.getLastName().equals(owner))
-                    .collect(Collectors.toList());
-
-                if (matchingOwners.size() == 0) {
-                    HttpHeaders headers = new HttpHeaders();
-                    headers.add("errors", "Owner not found");
-                    return new ResponseEntity<List<Pet>>(headers, HttpStatus.BAD_REQUEST);
-                }
-                if (matchingOwners.size() > 1) {
-                    HttpHeaders headers = new HttpHeaders();
-                    headers.add("errors", "Owner not unique");
-                    return new ResponseEntity<List<Pet>>(headers, HttpStatus.BAD_REQUEST);
-                }
-                pet.setOwner(matchingOwners.iterator().next());
+            settingResponse = setOwner(pet, fields[3]);
+            if (!settingResponse.isSuccessful) {
+                return errorResponse(settingResponse.errorMessage);
             }
 
-            // process the action
-            if (fields.length == 5) {
-
-                String field = fields[4];
-
-                if (field.toLowerCase().equals("add")) {
-                    clinicService.savePet(pet);
-                } else {
-                    for (Pet q : pet.getOwner().getPets()) {
-                        if (q.getName().equals(pet.getName())) {
-                            if (q.getType().getId().equals(pet.getType().getId())) {
-                                if (pet.getBirthDate().equals(q.getBirthDate())) {
-                                    clinicService.deletePet(q);
-                                }
-                            }
-                        }
-                    }
-                }
+            String action = fields[4];
+            if (action.equalsIgnoreCase("add")) {
+                petsToAdd.add(pet);
+            } else if (action.equalsIgnoreCase("delete")) {
+                petsToDelete.add(pet);
             } else {
-                clinicService.savePet(pet);
+                return errorResponse("invalid action");
             }
-            pets.add(pet);
         }
-        return new ResponseEntity<List<Pet>>(pets, HttpStatus.OK);
+
+        for (Pet p : petsToAdd) {
+            clinicService.savePet(p);
+        }
+
+        for (Pet p : petsToDelete) {
+            deletePet(p);
+        }
+
+        return new ResponseEntity<>(
+            Stream.concat(
+                petsToAdd.stream(),
+                petsToDelete.stream()
+            ).collect(Collectors.toList()),
+            HttpStatus.OK
+        );
     }
 
-    private Boolean setPetBirthDate(Pet pet, String dateString) {
+    private static class SettingResponse {
+        public boolean isSuccessful;
+        public String errorMessage;
+
+        public SettingResponse() {
+            this.isSuccessful = true;
+            this.errorMessage = null;
+        }
+
+        public SettingResponse(String errorMessage) {
+            this.isSuccessful = false;
+            this.errorMessage = errorMessage;
+        }
+    }
+
+    private ResponseEntity<List<Pet>> errorResponse(String headerValue) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.add("errors", headerValue);
+        return new ResponseEntity<>(headers, HttpStatus.BAD_REQUEST);
+    }
+
+    private SettingResponse setDateOfBirth(Pet pet, String dateOfBirth) {
         try {
-            pet.setBirthDate((new SimpleDateFormat("yyyy-MM-dd")).parse(dateString));
-            return true;
+            pet.setBirthDate((new SimpleDateFormat("yyyy-MM-dd")).parse(dateOfBirth));
+            return new SettingResponse();
         } catch (ParseException e) {
-            // HttpHeaders headers = new HttpHeaders();
-            // headers.add("errors", "date " + field + " not valid");
+            return new SettingResponse("date " + dateOfBirth + " not valid");
+        }
+    }
+
+    private SettingResponse setPetType(Pet pet, String petTypeName) {
+        PetType petType = findPetTypeByName(petTypeName);
+        if (petType != null) {
+            pet.setType(petType);
+            return new SettingResponse();
+        }
+        return new SettingResponse("type " + petTypeName + " not valid");
+    }
+
+    private SettingResponse setOwner(Pet pet, String ownerName) {
+        List<Owner> matchingOwners = findOwnersByName(ownerName);
+        if (matchingOwners.size() == 1) {
+            pet.setOwner(matchingOwners.iterator().next());
+            return new SettingResponse();
+        } else if (matchingOwners.size() > 1) {
+            return new SettingResponse("Owner not unique");
+        } else {
+            return new SettingResponse("Owner not found");
+        }
+    }
+
+    private PetType findPetTypeByName(String name) {
+        return clinicService.findPetTypes().stream().filter(
+            petType -> name.equals(petType.getName().toLowerCase())
+        ).findFirst().orElse(null);
+    }
+
+    private List<Owner> findOwnersByName(String name) {
+        return clinicService.findAllOwners()
+            .stream()
+            .filter(o -> o.getLastName().equals(name))
+            .collect(Collectors.toList());
+    }
+
+    private void deletePet(Pet pet) {
+        for (Pet existingPet : pet.getOwner().getPets()) {
+            if (equalPets(pet, existingPet)) {
+                clinicService.deletePet(existingPet);
+            }
+        }
+    }
+
+    private boolean equalPets(Pet pet1, Pet pet2) {
+        if (!pet1.getName().equals(pet2.getName())) {
             return false;
         }
+        if (!pet1.getType().getId().equals(pet2.getType().getId())) {
+            return false;
+        }
+        if (!pet1.getBirthDate().equals(pet2.getBirthDate())) {
+            return false;
+        }
+        return true;
     }
 }
