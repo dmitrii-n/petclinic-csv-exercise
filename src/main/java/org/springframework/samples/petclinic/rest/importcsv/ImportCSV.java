@@ -32,59 +32,40 @@ public class ImportCSV {
         consumes = "text/plain",
         produces = "application/json")
     public ResponseEntity<List<Pet>> importPets(@RequestBody String csv) {
-
-        int i = 0;
         List<Pet> pets = new LinkedList<Pet>();
-        Pet pet;
+        for (String line : csv.split("\\r?\\n")) {
+            String[] fields = line.split(";");
+            // validate the fields - check that we have as many as we need
+            // check each field - it should contain proper information
+            Pet pet = new Pet();
 
-        do {
-            pet = new Pet();
+            // set the name
+            pet.setName(fields[0]);
 
-            String field = "";
-            while (i < csv.length() && csv.charAt(i) != ';') {
-                field += csv.charAt(i++);
-            }
-            i++;
 
-            pet.setName(field);
-
-            field = "";
-            while (i < csv.length() && csv.charAt(i) != ';') {
-                field += csv.charAt(i++);
-            }
-            i++;
-
+            // set the birthdate
             try {
-                pet.setBirthDate((new SimpleDateFormat("yyyy-MM-dd")).parse(field));
+                pet.setBirthDate((new SimpleDateFormat("yyyy-MM-dd")).parse(fields[1]));
             } catch (ParseException e) {
                 HttpHeaders headers = new HttpHeaders();
                 headers.add("errors", "date " + field + " not valid");
                 return new ResponseEntity<List<Pet>>(headers, HttpStatus.BAD_REQUEST);
             }
 
-            field = "";
-            while (i < csv.length() && csv.charAt(i) != ';') {
-                field += csv.charAt(i++);
-            }
-            i++;
-
+            // set the type
             if (pet != null) {
                 ArrayList<PetType> ts = (ArrayList<PetType>) clinicService.findPetTypes();
                 for (int j = 0; j < ts.size(); j++) {
-                    if (ts.get(j).getName().toLowerCase().equals(field)) {
+                    if (ts.get(j).getName().toLowerCase().equals(fields[2])) {
                         pet.setType(ts.get(j));
                         break;
                     }
                 }
             }
 
-            field = "";
-            while (i < csv.length() && (csv.charAt(i) != ';' && csv.charAt(i) != '\n')) {
-                field += csv.charAt(i++);
-            }
-
+            // set the owner
             if (pet != null) {
-                String owner = field;
+                String owner = fields[3];
                 List<Owner> matchingOwners = clinicService.findAllOwners()
                     .stream()
                     .filter(o -> o.getLastName().equals(owner))
@@ -103,13 +84,10 @@ public class ImportCSV {
                 pet.setOwner(matchingOwners.iterator().next());
             }
 
-            if (csv.charAt(i) == ';') {
-                i++;
+            // process the action
+            if (fields.length == 5) {
 
-                field = "";
-                while (i < csv.length() && csv.charAt(i) != '\n') {
-                    field += csv.charAt(i++);
-                }
+                String field = fields[4];
 
                 if (field.toLowerCase().equals("add")) {
                     clinicService.savePet(pet);
@@ -124,16 +102,22 @@ public class ImportCSV {
                         }
                     }
                 }
-
             } else {
                 clinicService.savePet(pet);
             }
-            i++;
-
             pets.add(pet);
-
-        } while (i < csv.length() && pet != null);
-
+        }
         return new ResponseEntity<List<Pet>>(pets, HttpStatus.OK);
+    }
+
+    private Boolean setPetBirthDate(Pet pet, String dateString) {
+        try {
+            pet.setBirthDate((new SimpleDateFormat("yyyy-MM-dd")).parse(dateString));
+            return true;
+        } catch (ParseException e) {
+            // HttpHeaders headers = new HttpHeaders();
+            // headers.add("errors", "date " + field + " not valid");
+            return false;
+        }
     }
 }
